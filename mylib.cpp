@@ -1,7 +1,4 @@
 #include <Python.h>
-//#include <stdio.h>
-//#include <time.h>
-//#include <sys/time.h>
 #include <numpy/arrayobject.h>
 #include <numpy/arrayscalars.h>
 
@@ -61,16 +58,6 @@ static inline __m256 m256_fmadd(__m256 d1, __m256 d2, __m256 d3){
     return _mm256_fmadd_ps(d1,d2,d3);
 }
 
-/*
-template <typename T>
-static inline T m256_add(T d1, T d2){
-    if(is_same<__m256d,T>::value){
-        return (T)_mm256_add_pd((__m256d)d1,(__m256d)d2);
-    }else{
-        return (T)_mm256_add_ps((__m256)d1,(__m256)d2);
-    }
-}
-*/
 template <typename T>
 static inline T m256_setzerp(){
     if(is_same<__m256d,T>::value){
@@ -139,7 +126,6 @@ static auto muladd_imag(const double* d1, const __m256d d2, __m256d sum){
 static auto muladd_imag(const float* d1, const __m256d d2, __m256d sum){
     return _mm256_setzero_ps();
 }
-
 
 static auto addresult(const complex<double> &result, const complex<double> &a, const complex<double> &b){
     return complex<double>(result.real() + a.real() - a.imag(), result.imag() + b.real() + b.imag());
@@ -237,8 +223,7 @@ static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
     return result;
 }
 
-static PyObject *
-inner(PyObject *self, PyObject *args)
+static PyObject* inner(PyObject *self, PyObject *args)
 {
     PyArrayObject *array1,*array2;
     if (!PyArg_ParseTuple(args, "OO", &array1, &array2 )){
