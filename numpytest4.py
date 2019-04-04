@@ -2,7 +2,7 @@ import numpy
 import mylib
 import time
 
-size = 16;
+size = 16*256*256*256;
 v1 = numpy.random.rand(size)+numpy.random.rand(size)*1j
 v2 = numpy.random.rand(size)+numpy.random.rand(size)*1j
 print(v1)

@@ -35,7 +35,7 @@ static inline auto m256_load(const float* d1){
 static inline auto m256_load(const complex<float>* d1){
         return _mm256_load_ps((const float*)d1);
 }
-
+/*
 static inline void m256_store(double* d1, __m256d reg){
     _mm256_store_pd(d1, reg);
 }
@@ -49,13 +49,39 @@ static inline void m256_store(float* d1, __m256 reg){
 static inline void m256_store(complex<float>* d1, __m256 reg){
     _mm256_store_ps((float*)d1, reg);
 }
-
+*/
 static inline __m256d m256_fmadd(__m256d d1, __m256d d2, __m256d d3){
     return _mm256_fmadd_pd(d1,d2,d3);
 }
 
 static inline __m256 m256_fmadd(__m256 d1, __m256 d2, __m256 d3){
     return _mm256_fmadd_ps(d1,d2,d3);
+}
+
+static inline __m256d m256_hsub(__m256d d1, __m256d d2){
+    return _mm256_hsub_pd(d1,d2);
+}
+static inline __m256 m256_hsub(__m256 d1, __m256 d2){
+    return _mm256_hsub_ps(d1,d2);
+}
+static inline __m256d m256_hadd(__m256d d1, __m256d d2){
+    return _mm256_hadd_pd(d1,d2);
+}
+static inline __m256 m256_hadd(__m256 d1, __m256 d2){
+    return _mm256_hadd_ps(d1,d2);
+}
+static inline __m256d m256_shuffle(__m256d d1, __m256d d2){
+    return _mm256_shuffle_pd(d1,d2,0);
+}
+static inline __m256 m256_shuffle(__m256 d1, __m256 d2){
+    return _mm256_shuffle_ps(d1,d2,0);
+}
+
+static inline __m256d m256_blend(__m256d d1, __m256d d2){
+    return _mm256_blend_pd(d1,d2,0xa);
+}
+static inline __m256 m256_blend(__m256 d1, __m256 d2){
+    return _mm256_blend_ps(d1,d2,0xaa);
 }
 
 template <typename T>
@@ -98,27 +124,13 @@ static __m256 muladd(const __m256 d1, const __m256 d2, __m256 sum){
 
 //虚数部の積和計算
 //配列の順序を入れ替えて積和計算を行う。
-static __m256d muladd_imag(const complex<double>* v1, const __m256d d2, __m256d sum){
-    double tmp[4];
-    tmp[0] = ((const double*)v1)[1];
-    tmp[1] = ((const double*)v1)[0];
-    tmp[2] = ((const double*)v1)[3];
-    tmp[3] = ((const double*)v1)[2];
-    auto d1 = m256_load(tmp);
-    return m256_fmadd(d1,d2,sum);
+static __m256d muladd_imag(const __m256d d1, const __m256d d2, __m256d sum){
+    auto d = _mm256_permute_pd(d1, 0x5);
+    return m256_fmadd(d,d2,sum);
 }
-static __m256 muladd_imag(const complex<float>* v1, const __m256 d2, __m256 sum){
-    float tmp[8];
-    tmp[0] = ((const float*)v1)[1];
-    tmp[1] = ((const float*)v1)[0];
-    tmp[2] = ((const float*)v1)[3];
-    tmp[3] = ((const float*)v1)[2];
-    tmp[4] = ((const float*)v1)[5];
-    tmp[5] = ((const float*)v1)[4];
-    tmp[6] = ((const float*)v1)[7];
-    tmp[7] = ((const float*)v1)[6];
-    auto d1 = m256_load(tmp);
-    return m256_fmadd(d1,d2,sum);
+static __m256 muladd_imag(const __m256 d1, const __m256 d2, __m256 sum){
+    auto d = _mm256_permute_ps(d1, 0xb1);
+    return m256_fmadd(d,d2,sum);
 }
 static auto muladd_imag(const double* d1, const __m256d d2, __m256d sum){
     return _mm256_setzero_pd();
@@ -126,7 +138,7 @@ static auto muladd_imag(const double* d1, const __m256d d2, __m256d sum){
 static auto muladd_imag(const float* d1, const __m256d d2, __m256d sum){
     return _mm256_setzero_ps();
 }
-
+/*
 static auto addresult(const complex<double> &result, const complex<double> &a, const complex<double> &b){
     return complex<double>(result.real() + a.real() - a.imag(), result.imag() + b.real() + b.imag());
 }
@@ -141,6 +153,38 @@ static auto addresult(const double result, const double a, const double b){
 static auto addresult(const float result, const float a, const float b){
     return result + a;
 }
+*/
+
+static inline auto getResult(const double sum, const __m256d sum_real, const __m256d sum_imag){
+    const double* results = (const double*)&sum_real;
+    auto result = sum + results[0] + results[1] + results[2] + results[3];
+    return result;
+}
+
+static inline auto getResult(const complex<double> sum, const __m256d sum_real, const __m256d sum_imag){
+    auto result = sum;
+    auto real = m256_hsub(sum_real, sum_real);
+    auto imag = m256_hadd(sum_imag, sum_imag);
+    auto result_complex = m256_blend(real, imag);
+    const complex<double>* results = (const complex<double>*)&result_complex;
+    return sum + results[0] + results[1];
+}
+
+static inline auto getResult(const float sum, const __m256 sum_real, const __m256 sum_imag){
+    const float* results = (const float*)&sum_real;
+    auto result = sum + results[0] + results[1] + results[2] + results[3] 
+        + results[4] + results[5] + results[6] + results[7];
+    return result;
+}
+static inline auto getResult(const complex<float> sum, const __m256 sum_real, const __m256 sum_imag){
+    auto result_real = m256_hsub(sum_real, sum_real);
+    auto result_imag = m256_hadd(sum_imag, sum_imag);
+    const float* real = (const float*)&result_real;
+    const float* imag = (const float*)&result_imag;
+    return sum +  complex<float>(real[0] + real[1] + real[4] + real[5],
+                    imag[0] + imag[1] + imag[4] + imag[5]);
+}
+
 
 //simd命令を使って、内積を求める。
 template <typename T,typename U>
@@ -160,24 +204,43 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
     auto remain = size % step;//simdに入りきらないあまり分。後で別に計算する。
     size -= remain;
     auto sum_real = m256_setzerp<T>();
-    auto sum_imag = sum_real;
-    //const T* vsimd1 = (T*)v1;
-    //const T* vsimd2 = (T*)v2;
+    T sum_imag;
+    if(is_same<complex<double>,U>::value || is_same<complex<float>,U>::value){
+        sum_imag = sum_real;
+    }
     for(ssize_t i = 0; i < size; i+= step){
         //cout << " i " << i << "\n";
         auto d1 = m256_load(v1);
         auto d2 = m256_load(v2);
-        //cout << "d1 " << d1 << " d2 " << d2 << "\n";
-        //sum = m256_fmadd(d1,d2,sum);//sum=d1*d2+sum
         sum_real = muladd(d1,d2,sum_real);
         if(is_same<complex<double>,U>::value || is_same<complex<float>,U>::value){
-            sum_imag = muladd_imag(v1,d2,sum_imag);
+            sum_imag = muladd_imag(d1,d2,sum_imag);
         }
         v1 += step;
         v2 += step;
     }
     U result = calc_inner_nosimd<U>(v1,v2,remain);//４個または８個のあまりの計算を行う。
 
+#if 1
+    result = getResult(result, sum_real, sum_imag);
+    return result;
+#elif 1
+    if(is_same<complex<double>,U>::value || is_same<complex<float>,U>::value){
+        sum_real = m256_hsub(sum_real, sum_real);
+        sum_imag = m256_hadd(sum_imag, sum_imag);
+        auto result_complex = m256_blend(sum_real, sum_imag);
+        const U* results = (const U*)&result_complex;
+        for(int i=0; i < step; i++){//計算結果の集計
+            result += results[i];
+        }
+    }else{
+        const U* results = (const U*)&sum_real;
+        for(int i=0; i < step; i++){//計算結果の集計
+            result += results[i];
+        }
+    }
+    return result;
+#else
     U results[step];
     U results_img[step];
     m256_store(results, sum_real);//計算結果を配列に書き出す。
@@ -192,6 +255,7 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
         }
     }
     return result;
+#endif
 }
 
 //NUM_THREADSの数のスレッドに計算を割り当てて計算する関数。

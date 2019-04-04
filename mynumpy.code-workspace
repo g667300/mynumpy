@@ -6,7 +6,8 @@
 	],
 	"settings": {
 		"files.associations": {
-			"type_traits": "cpp"
+			"type_traits": "cpp",
+			"complex": "cpp"
 		}
 	}
 }

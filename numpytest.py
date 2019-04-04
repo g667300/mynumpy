@@ -3,8 +3,7 @@ import mylib
 import time
 import timeit
 
-#配列の長さ。１次元の配列です。
-maxsize = 256 * 256 * 256 * 16
+
 
 #１回の計算にかかる時間を測る。
 def laptime(f,vec1,vec2):
@@ -13,7 +12,7 @@ def laptime(f,vec1,vec2):
     t = time.time() - t
     return t
 
-def print_time_inner(v1, v2):
+def test_inner(v1, v2):
     time_numpy_inner = 0
     time_mylib_inner = 0
 
@@ -31,26 +30,34 @@ def print_time_inner(v1, v2):
     print("numpy.inner %5f(sec)" % time_numpy_inner,      "result=",result_numpy_inner)
     print("mylib.inner %5f(sec)" % time_mylib_inner,      "result=",result_mylib_inner)
     print("time ratio %5f" % (time_numpy_inner/time_mylib_inner))
+def test(arraysize):
+    print("------------------------------")
+    print("array size = ", arraysize)
+    print("double array inner")
+    vector1 = numpy.random.rand(arraysize)
+    vector2 = numpy.random.rand(arraysize)
+    test_inner(vector1,vector2)
 
-print("double array inner size=",maxsize)
-vector1 = numpy.random.rand(maxsize)
-vector2 = numpy.random.rand(maxsize)
-print_time_inner(vector1,vector2)
+    print("float array inner",)
+    vector1 = vector1.astype('float32')
+    vector2 = vector2.astype('float32')
+    test_inner(vector1,vector2)
 
-print("float array inner size=",maxsize)
-vector1 = vector1.astype('float32')
-vector2 = vector2.astype('float32')
-print_time_inner(vector1,vector2)
+    print("complex double array inner")
+    vector1 = numpy.random.rand(arraysize) + numpy.random.rand(arraysize) * 1j
+    vector2 = numpy.random.rand(arraysize) + numpy.random.rand(arraysize) * 1j
+    test_inner(vector1,vector2)
 
-print("complex double array inner size=",maxsize)
-vector1 = numpy.random.rand(maxsize) + numpy.random.rand(maxsize) * 1j
-vector2 = numpy.random.rand(maxsize) + numpy.random.rand(maxsize) * 1j
-print_time_inner(vector1,vector2)
+    print("complex float array inner")
+    vector1 = vector1.astype('complex64')
+    vector2 = vector2.astype('complex64')
+    test_inner(vector1,vector2)
 
-print("complex float array inner size=",maxsize)
-vector1 = vector1.astype('complex64')
-vector2 = vector2.astype('complex64')
-print_time_inner(vector1,vector2)
+#配列の長さ。１次元の配列です。
+test_count = 256 * 256 *256
+for i in range(1,9):
+    size = i * test_count
+    test(size)
 
 """
 #１回の計算にかかる時間を測る。
