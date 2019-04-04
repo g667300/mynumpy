@@ -35,21 +35,7 @@ static inline auto m256_load(const float* d1){
 static inline auto m256_load(const complex<float>* d1){
         return _mm256_load_ps((const float*)d1);
 }
-/*
-static inline void m256_store(double* d1, __m256d reg){
-    _mm256_store_pd(d1, reg);
-}
-static inline void m256_store(complex<double>* d1, __m256d reg){
-    _mm256_store_pd((double*)d1, reg);
-}
 
-static inline void m256_store(float* d1, __m256 reg){
-    _mm256_store_ps(d1, reg);
-}
-static inline void m256_store(complex<float>* d1, __m256 reg){
-    _mm256_store_ps((float*)d1, reg);
-}
-*/
 static inline __m256d m256_fmadd(__m256d d1, __m256d d2, __m256d d3){
     return _mm256_fmadd_pd(d1,d2,d3);
 }
@@ -138,23 +124,6 @@ static auto muladd_imag(const double* d1, const __m256d d2, __m256d sum){
 static auto muladd_imag(const float* d1, const __m256d d2, __m256d sum){
     return _mm256_setzero_ps();
 }
-/*
-static auto addresult(const complex<double> &result, const complex<double> &a, const complex<double> &b){
-    return complex<double>(result.real() + a.real() - a.imag(), result.imag() + b.real() + b.imag());
-}
-
-static auto addresult(const complex<float> &result, const complex<float> &a, const complex<float> &b){
-    return complex<float>(result.real() + a.real() - a.imag(), result.imag() + b.real() + b.imag());
-}
-
-static auto addresult(const double result, const double a, const double b){
-    return result + a;
-}
-static auto addresult(const float result, const float a, const float b){
-    return result + a;
-}
-*/
-
 static inline auto getResult(const double sum, const __m256d sum_real, const __m256d sum_imag){
     const double* results = (const double*)&sum_real;
     auto result = sum + results[0] + results[1] + results[2] + results[3];
@@ -221,41 +190,9 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
     }
     U result = calc_inner_nosimd<U>(v1,v2,remain);//４個または８個のあまりの計算を行う。
 
-#if 1
+
     result = getResult(result, sum_real, sum_imag);
     return result;
-#elif 1
-    if(is_same<complex<double>,U>::value || is_same<complex<float>,U>::value){
-        sum_real = m256_hsub(sum_real, sum_real);
-        sum_imag = m256_hadd(sum_imag, sum_imag);
-        auto result_complex = m256_blend(sum_real, sum_imag);
-        const U* results = (const U*)&result_complex;
-        for(int i=0; i < step; i++){//計算結果の集計
-            result += results[i];
-        }
-    }else{
-        const U* results = (const U*)&sum_real;
-        for(int i=0; i < step; i++){//計算結果の集計
-            result += results[i];
-        }
-    }
-    return result;
-#else
-    U results[step];
-    U results_img[step];
-    m256_store(results, sum_real);//計算結果を配列に書き出す。
-    if(is_same<complex<double>,U>::value || is_same<complex<float>,U>::value){
-        m256_store(results_img, sum_imag);//計算結果を配列に書き出す。
-        for(int i=0; i < step; i++){//計算結果の集計
-            result = addresult(result, results[i], results_img[i]);
-        }
-    }else{
-        for(int i=0; i < step; i++){//計算結果の集計
-            result = addresult(result, results[i],0);
-        }
-    }
-    return result;
-#endif
 }
 
 //NUM_THREADSの数のスレッドに計算を割り当てて計算する関数。
