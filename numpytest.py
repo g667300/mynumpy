@@ -30,6 +30,7 @@ def test_inner(v1, v2):
     print("numpy.inner %5f(sec)" % time_numpy_inner,      "result=",result_numpy_inner)
     print("mylib.inner %5f(sec)" % time_mylib_inner,      "result=",result_mylib_inner)
     print("time ratio %5f" % (time_numpy_inner/time_mylib_inner))
+
 def test(arraysize):
     print("------------------------------")
     print("array size = ", arraysize)
