@@ -59,36 +59,3 @@ test_count = 256 * 256 *256
 for i in range(1,9):
     size = i * test_count
     test(size)
-
-"""
-#１回の計算にかかる時間を測る。
-def laptime1(f,vec1):
-    t = time.time()
-    result = f(vec1)
-    t = time.time() - t
-    return t
-
-def print_time_sum(v1):
-    time_numpy = 0
-    time_mylib = 0
-
-    #warming up
-    result_numpy = numpy.sum(v1)
-    result_mylib = mylib.sum(v1)
-    #できるだけ公平になるように、ループ内で交互に呼ぶ
-    for i in range(16):
-        time_mylib += laptime1(mylib.sum,v1)
-        time_numpy += laptime1(numpy.sum,v1)
-    #結果の表示
-    print("numpy.sum %5f(sec)" % time_numpy,      "result=",result_numpy)
-    print("mylib.sum %5f(sec)" % time_mylib,      "result=",result_mylib)
-    print("time ratio %5f" % (time_numpy/time_mylib))
-
-print("double array sum size=",maxsize)
-vector1 = numpy.random.rand(maxsize)
-print_time_sum(vector1)
-
-print("float array sum size=",maxsize)
-vector1 = vector1.astype('float32')
-print_time_sum(vector1)
-"""
