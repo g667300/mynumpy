@@ -252,7 +252,7 @@ static PyObject* inner(PyObject *self, PyObject *args)
             const complex<float>* data2 = (const complex<float>*)array2->data;
             complex<double> result = calc_inner_multithread<__m256,complex<float>,4>(data1, data2, size1);
             //cout << "result=" << result << "\n";
-            return Py_BuildValue("D", &result);
+            return Py_BuildValue("D", &result);//"F"ではエラーとなる。
         }
         default:{
             PyErr_SetString(PyExc_TypeError, "type miss match");
