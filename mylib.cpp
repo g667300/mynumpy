@@ -90,30 +90,33 @@ static U calc_inner_nosimd(const U* v1, const U* v2, ssize_t size){
 // ans[3] = d1[2] * d2[3] + d1[3] * d2[2]
 
 //実数部の積和計算
-static __m256d muladd(const __m256d d1, const __m256d d2, __m256d sum){
+static auto muladd(const __m256d d1, const __m256d d2, __m256d sum){
     return m256_fmadd(d1,d2,sum);//sum=d1*d2+sum
 }
-static __m256 muladd(const __m256 d1, const __m256 d2, __m256 sum){
+static auto muladd(const __m256 d1, const __m256 d2, __m256 sum){
     return m256_fmadd(d1,d2,sum);//sum=d1*d2+sum
 }
 
 //虚数部の積和計算
 //配列の順序を入れ替えて積和計算を行う。
-static __m256d muladd_imag(const __m256d d1, const __m256d d2, __m256d sum, const complex<double>* dummy){
+//dummyは型を決定するための引数。
+//doubleとfloatは虚数部がないので、そのままの値を返す。最適化で消えて無くなる。
+static inline auto muladd_imag(const __m256d d1, const __m256d d2, __m256d sum, const complex<double>* dummy){
     auto d = _mm256_permute_pd(d1, 0x5);
     return m256_fmadd(d,d2,sum);
 }
-static __m256 muladd_imag(const __m256 d1, const __m256 d2, __m256 sum, const complex<float>* dummy){
+static inline auto muladd_imag(const __m256 d1, const __m256 d2, __m256 sum, const complex<float>* dummy){
     auto d = _mm256_permute_ps(d1, 0xb1);
     return m256_fmadd(d,d2,sum);
 }
-static __m256d muladd_imag(const __m256d d1, const __m256d d2, __m256d sum, const double* dummy){
+static inline auto muladd_imag(const __m256d d1, const __m256d d2, __m256d sum, const double* dummy){
     return sum;
 }
-static __m256 muladd_imag(const __m256 d1, const __m256 d2, __m256 sum, const float* dummy){
+static inline auto muladd_imag(const __m256 d1, const __m256 d2, __m256 sum, const float* dummy){
     return sum;
 }
 
+//YMM regから答え取り出す。型によって結果の入り方が違うので、別関数になる。
 static inline auto getResult(const double sum, const __m256d sum_real, const __m256d sum_imag){
     const double* results = (const double*)&sum_real;
     auto result = sum + results[0] + results[1] + results[2] + results[3];
@@ -149,10 +152,7 @@ template <typename T,typename U>
 static U calc_inner(const U* v1, const U* v2, ssize_t size){
     type_check();
     //cout << "calc_inner size " << size << "\n";
-    constexpr int step = (is_same<float,U>::value) ? 8 : 
-        (is_same<complex<float>,U>::value) ? 4 : 
-        (is_same<double,U>::value) ? 4 : 
-        (is_same<complex<double>,U>::value) ? 2 : -1;
+    constexpr int step = sizeof(T) / sizeof(U);
     static_assert(step > 0,"illeagal type");
     //cout << "step " << typeid(U).name() << step << "\n";
     //simdレジスタ１個に入るデータの数
@@ -162,15 +162,13 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
     auto remain = size % step;//simdに入りきらないあまり分。後で別に計算する。
     size -= remain;
     auto sum_real = m256_setzerp<T>();
-    T sum_imag = sum_real;
+    T sum_imag = sum_real;//虚数部。double/floatの計算の際にはこの変数は使われない為、最適化で消える。
     for(ssize_t i = 0; i < size; i+= step){
         //cout << " i " << i << "\n";
         auto d1 = m256_load(v1);
         auto d2 = m256_load(v2);
         sum_real = muladd(d1,d2,sum_real);
-        //if(is_same<complex<double>,U>::value || is_same<complex<float>,U>::value){
         sum_imag = muladd_imag(d1,d2,sum_imag, v1);
-        //}
         v1 += step;
         v2 += step;
     }
