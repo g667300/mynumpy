@@ -13,6 +13,9 @@
 
 using namespace std;
 
+#define ALLOW_MISSALIGN
+static int numofcores = 1;
+
 #define EXTERNC extern "C"
 //T,Uの組み合わせの確認マクロ
 #define type_check() \
@@ -22,18 +25,34 @@ using namespace std;
     ((is_same<complex<double>,U>::value) && (is_same<__m256d,T>::value))\
     ,"type mismatch")
 
+#ifdef ALLOW_MISSALIGN
 static inline auto m256_load(const double* d1){
-        return _mm256_load_pd(d1);
+    return _mm256_loadu_pd(d1);
 }
 static inline auto m256_load(const complex<double>* d1){
-        return _mm256_load_pd((const double*)d1);
+    return _mm256_loadu_pd((const double*)d1);
 }
 static inline auto m256_load(const float* d1){
-        return _mm256_load_ps(d1);
+    return _mm256_loadu_ps(d1);
 }
 static inline auto m256_load(const complex<float>* d1){
-        return _mm256_load_ps((const float*)d1);
+    return _mm256_loadu_ps((const float*)d1);
 }
+#else
+static inline auto m256_load(const double* d1){
+    return _mm256_load_pd(d1);
+}
+static inline auto m256_load(const complex<double>* d1){
+    return _mm256_load_pd((const double*)d1);
+}
+static inline auto m256_load(const float* d1){
+    return _mm256_load_ps(d1);
+}
+static inline auto m256_load(const complex<float>* d1){
+    return _mm256_load_ps((const float*)d1);
+}
+#endif
+
 
 static inline __m256d m256_fmadd(__m256d d1, __m256d d2, __m256d d3){
     return _mm256_fmadd_pd(d1,d2,d3);
@@ -205,7 +224,6 @@ static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
     }
     return result;
 }
-
 static PyObject* inner(PyObject *self, PyObject *args)
 {
     PyArrayObject *array1,*array2;
@@ -261,6 +279,8 @@ static PyObject* inner(PyObject *self, PyObject *args)
     }
 }
 
+
+
 static PyMethodDef methods[] = {
     {"inner", inner, METH_VARARGS},
     {NULL, NULL}
@@ -277,7 +297,29 @@ static struct PyModuleDef cmodule = {
    methods
 };
 
+//cpuのcore 数を得る。
+static int getNumOfCore(){
+    int eax;
+    int ebx;
+    asm("cpuid"
+        :"=a"(eax)
+        :"a"(0)
+    );
+    //printf("eax=%x\n",eax);
+    if( eax <= 1 )
+        return 1;
+    asm("cpuid"
+        :"=a"(ebx)
+        :"a"(1)
+    );
+    //printf("ebx=%x\n",ebx);
+    ebx >>=16;
+    ebx &= 0xff;
+    return ebx;
+}
+
 EXTERNC void* PyInit_mylib(void)
 {
+    numofcores = getNumOfCore();
     return PyModule_Create(&cmodule);
 }
