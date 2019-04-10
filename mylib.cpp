@@ -10,10 +10,11 @@
 #include <iostream>
 #include <complex>
 #include <typeinfo>
+#include <stdio.h>
 
 using namespace std;
 
-#define ALLOW_MISSALIGN
+//#define ALLOW_MISSALIGN
 static int numofcores = 1;
 
 #define EXTERNC extern "C"
@@ -25,33 +26,35 @@ static int numofcores = 1;
     ((is_same<complex<double>,U>::value) && (is_same<__m256d,T>::value))\
     ,"type mismatch")
 
-#ifdef ALLOW_MISSALIGN
-static inline auto m256_load(const double* d1){
-    return _mm256_loadu_pd(d1);
+
+static inline auto m256_load(const double* d1, bool aligned){
+    if(aligned){
+        return _mm256_load_pd(d1);
+    }else{
+        return _mm256_loadu_pd(d1);
+    }
 }
-static inline auto m256_load(const complex<double>* d1){
-    return _mm256_loadu_pd((const double*)d1);
+static inline auto m256_load(const complex<double>* d1, bool aligned){
+    if(aligned){
+        return _mm256_load_pd((const double*)d1);
+    }else{
+        return _mm256_loadu_pd((const double*)d1);
+    }
 }
-static inline auto m256_load(const float* d1){
-    return _mm256_loadu_ps(d1);
+static inline auto m256_load(const float* d1, bool aligned){
+    if(aligned){
+        return _mm256_load_ps(d1);
+    }else{
+        return _mm256_loadu_ps(d1);
+    }
 }
-static inline auto m256_load(const complex<float>* d1){
-    return _mm256_loadu_ps((const float*)d1);
+static inline auto m256_load(const complex<float>* d1, bool aligned){
+    if(aligned){
+        return _mm256_load_ps((const float*)d1);
+    }else{
+        return _mm256_loadu_ps((const float*)d1);
+    }
 }
-#else
-static inline auto m256_load(const double* d1){
-    return _mm256_load_pd(d1);
-}
-static inline auto m256_load(const complex<double>* d1){
-    return _mm256_load_pd((const double*)d1);
-}
-static inline auto m256_load(const float* d1){
-    return _mm256_load_ps(d1);
-}
-static inline auto m256_load(const complex<float>* d1){
-    return _mm256_load_ps((const float*)d1);
-}
-#endif
 
 
 static inline __m256d m256_fmadd(__m256d d1, __m256d d2, __m256d d3){
@@ -167,7 +170,7 @@ static inline auto getResult(const complex<float> sum, const __m256 sum_real, co
 
 
 //simd命令を使って、内積を求める。
-template <typename T,typename U>
+template <typename T,typename U,bool ALIGNMENT>
 static U calc_inner(const U* v1, const U* v2, ssize_t size){
     type_check();
     //cout << "calc_inner size " << size << "\n";
@@ -184,8 +187,8 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
     T sum_imag = sum_real;//虚数部。double/floatの計算の際にはこの変数は使われない為、最適化で消える。
     for(ssize_t i = 0; i < size; i+= step){
         //cout << " i " << i << "\n";
-        auto d1 = m256_load(v1);
-        auto d2 = m256_load(v2);
+        auto d1 = m256_load(v1,ALIGNMENT);
+        auto d2 = m256_load(v2,ALIGNMENT);
         sum_real = muladd(d1,d2,sum_real);
         sum_imag = muladd_imag(d1,d2,sum_imag, v1);
         v1 += step;
@@ -198,11 +201,11 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
 
 //NUM_THREADSの数のスレッドに計算を割り当てて計算する関数。
 //future/asyncを使用
-template <typename T, typename U, unsigned NUM_THREADS>
+template <typename T, typename U, unsigned NUM_THREADS,bool ALIGNMENT>
 static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
     //cout << "calc_inner_multithread size " << size1 << "\n";
     if( size1 < 32 ){//配列が短い場合にはスレッドを起こさない。この数は環境によって要調整
-        return calc_inner<T,U>(d1, d2, size1);
+        return calc_inner<T,U,ALIGNMENT>(d1, d2, size1);
     }
     auto remain = size1 % NUM_THREADS;//スレッドに割り振れないあまり。
     auto size = size1 / NUM_THREADS;//スレッド１個あたりの計算数
@@ -213,17 +216,59 @@ static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
             auto d1start = d1 + start;
             auto d2start = d2 + start;
             futures.push_back(async(launch::async,[d1start,d2start,size](){//別スレッドでcalc_innerを実行
-                return calc_inner<T,U>(d1start, d2start, size);
+                return calc_inner<T,U,ALIGNMENT>(d1start, d2start, size);
             }));
         }
     }
     ssize_t start = (NUM_THREADS-1) * size;
-    U result = calc_inner<T,U>(d1 + start, d2 + start, size + remain);//自スレッド分の計算
+    U result = calc_inner<T,U,ALIGNMENT>(d1 + start, d2 + start, size + remain);//自スレッド分の計算
     for(auto&& f : futures){//他のスレッドの計算結果を集計
         result += f.get();
     }
     return result;
 }
+
+template<bool ALIGNMENT>
+static PyObject* inner_aligned(const PyArrayObject* array1, const PyArrayObject* array2, 
+    decltype(array1->dimensions[0]) size){
+    //cout << (array1->descr->type) << "\n";
+    switch(array1->descr->type ){
+        case 'd':{
+            const double* data1 = (const double*)array1->data;
+            const double* data2 = (const double*)array2->data;
+            auto result = calc_inner_multithread<__m256d,double,4,ALIGNMENT>(data1, data2, size);
+            //cout << "result=" << result << "\n";
+            return Py_BuildValue("d", result);
+        }
+        case 'D':{
+            const complex<double>* data1 = (const complex<double>*)array1->data;
+            const complex<double>* data2 = (const complex<double>*)array2->data;
+            auto result = calc_inner_multithread<__m256d,complex<double>,4,ALIGNMENT>(data1, data2, size);
+            //cout << "result=" << result << "\n";
+            return Py_BuildValue("D", &result);
+        }
+        case 'f':{
+            const float* data1 = (const float*)array1->data;
+            const float* data2 = (const float*)array2->data;
+            auto result = calc_inner_multithread<__m256,float,4,ALIGNMENT>(data1, data2, size);
+            //cout << "result=" << result << "\n";
+            return Py_BuildValue("f", result);
+        }
+        case 'F':{
+            const complex<float>* data1 = (const complex<float>*)array1->data;
+            const complex<float>* data2 = (const complex<float>*)array2->data;
+            complex<double> result = calc_inner_multithread<__m256,complex<float>,4,ALIGNMENT>(data1, data2, size);
+            //cout << "result=" << result << "\n";
+            return Py_BuildValue("D", &result);//"F"ではエラーとなる。
+        }
+        default:{
+            PyErr_SetString(PyExc_TypeError, "type miss match");
+            return nullptr;
+        }
+    }
+
+}
+
 static PyObject* inner(PyObject *self, PyObject *args)
 {
     PyArrayObject *array1,*array2;
@@ -241,61 +286,25 @@ static PyObject* inner(PyObject *self, PyObject *args)
         PyErr_SetString(PyExc_IndexError, "type miss match");
         return NULL;
     }
-    
-    //cout << (array1->descr->type) << "\n";
-    switch(array1->descr->type ){
-        case 'd':{
-            const double* data1 = (const double*)array1->data;
-            const double* data2 = (const double*)array2->data;
-            auto result = calc_inner_multithread<__m256d,double,4>(data1, data2, size1);
-            //cout << "result=" << result << "\n";
-            return Py_BuildValue("d", result);
-        }
-        case 'D':{
-            const complex<double>* data1 = (const complex<double>*)array1->data;
-            const complex<double>* data2 = (const complex<double>*)array2->data;
-            auto result = calc_inner_multithread<__m256d,complex<double>,4>(data1, data2, size1);
-            //cout << "result=" << result << "\n";
-            return Py_BuildValue("D", &result);
-        }
-        case 'f':{
-            const float* data1 = (const float*)array1->data;
-            const float* data2 = (const float*)array2->data;
-            auto result = calc_inner_multithread<__m256,float,4>(data1, data2, size1);
-            //cout << "result=" << result << "\n";
-            return Py_BuildValue("f", result);
-        }
-        case 'F':{
-            const complex<float>* data1 = (const complex<float>*)array1->data;
-            const complex<float>* data2 = (const complex<float>*)array2->data;
-            complex<double> result = calc_inner_multithread<__m256,complex<float>,4>(data1, data2, size1);
-            //cout << "result=" << result << "\n";
-            return Py_BuildValue("D", &result);//"F"ではエラーとなる。
-        }
-        default:{
-            PyErr_SetString(PyExc_TypeError, "type miss match");
-            return NULL;
-        }
+    if( ((reinterpret_cast<unsigned long long>(array1->data) | reinterpret_cast<unsigned long long>(array2->data)) 
+        & (32-1)) == 0 ){//32 bytes aligned
+        return inner_aligned<true>(array1, array2, size1);
+    }else{//miss aligned
+        return inner_aligned<false>(array1, array2, size1);
     }
 }
 
+static PyObject* printAddress(PyObject *self, PyObject *args)
+{
+    PyArrayObject *array1;
+    if (!PyArg_ParseTuple(args, "O", &array1 )){
+        PyErr_SetString(PyExc_ValueError, "not array");
+        return NULL;
+    }
+    printf("array->data:%llx\n",array1->data);
+    return Py_None;
+}
 
-
-static PyMethodDef methods[] = {
-    {"inner", inner, METH_VARARGS},
-    {NULL, NULL}
-};
-
-PyDoc_STRVAR(api_doc, "Python3 API sample.\n");
-
-static struct PyModuleDef cmodule = {
-   PyModuleDef_HEAD_INIT,
-   "mylib",   /* name of module */
-   api_doc, /* module documentation, may be NULL */
-   -1,       /* size of per-interpreter state of the module,
-                or -1 if the module keeps state in global variables. */
-   methods
-};
 
 //cpuのcore 数を得る。
 static int getNumOfCore(){
@@ -317,6 +326,24 @@ static int getNumOfCore(){
     ebx &= 0xff;
     return ebx;
 }
+
+static PyMethodDef methods[] = {
+    {"inner", inner, METH_VARARGS},
+    {"printAddress", printAddress, METH_VARARGS},
+    {NULL, NULL}
+};
+
+PyDoc_STRVAR(api_doc, "Python3 API sample.\n");
+
+static struct PyModuleDef cmodule = {
+   PyModuleDef_HEAD_INIT,
+   "mylib",   /* name of module */
+   api_doc, /* module documentation, may be NULL */
+   -1,       /* size of per-interpreter state of the module,
+                or -1 if the module keeps state in global variables. */
+   methods
+};
+
 
 EXTERNC void* PyInit_mylib(void)
 {
