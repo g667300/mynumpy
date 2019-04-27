@@ -1,6 +1,7 @@
 #include <Python.h>
 #include <numpy/arrayobject.h>
 #include <numpy/arrayscalars.h>
+#include <pymem.h>
 
 #include <immintrin.h>
 #include <type_traits>
@@ -11,11 +12,13 @@
 #include <complex>
 #include <typeinfo>
 #include <stdio.h>
+#include <stdlib.h>
 
 using namespace std;
 
-//#define ALLOW_MISSALIGN
-static int numofcores = 1;
+static unsigned int nthreads = 1;
+
+#define NUM_CORES 4
 
 #define EXTERNC extern "C"
 //T,Uの組み合わせの確認マクロ
@@ -55,7 +58,6 @@ static inline auto m256_load(const complex<float>* d1, bool aligned){
         return _mm256_loadu_ps((const float*)d1);
     }
 }
-
 
 static inline __m256d m256_fmadd(__m256d d1, __m256d d2, __m256d d3){
     return _mm256_fmadd_pd(d1,d2,d3);
@@ -168,11 +170,12 @@ static inline auto getResult(const complex<float> sum, const __m256 sum_real, co
                     imag[0] + imag[1] + imag[4] + imag[5]);
 }
 
-
 //simd命令を使って、内積を求める。
-template <typename T,typename U,bool ALIGNMENT>
+template <typename T,typename U, bool aligned>
 static U calc_inner(const U* v1, const U* v2, ssize_t size){
     type_check();
+    constexpr bool iscomplex = (is_same<complex<double>,U>::value) || (is_same<complex<float>,U>::value);
+
     //cout << "calc_inner size " << size << "\n";
     constexpr int step = sizeof(T) / sizeof(U);
     static_assert(step > 0,"illeagal type");
@@ -184,13 +187,18 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
     auto remain = size % step;//simdに入りきらないあまり分。後で別に計算する。
     size -= remain;
     auto sum_real = m256_setzerp<T>();
-    T sum_imag = sum_real;//虚数部。double/floatの計算の際にはこの変数は使われない為、最適化で消える。
+    T sum_imag;
+    if( iscomplex ){
+        sum_imag = m256_setzerp<T>();//虚数部。double/floatの計算の際にはこの変数は使われない為、最適化で消える。
+    }
     for(ssize_t i = 0; i < size; i+= step){
         //cout << " i " << i << "\n";
-        auto d1 = m256_load(v1,ALIGNMENT);
-        auto d2 = m256_load(v2,ALIGNMENT);
+        auto d1 = m256_load(v1,aligned);
+        auto d2 = m256_load(v2,aligned);
         sum_real = muladd(d1,d2,sum_real);
-        sum_imag = muladd_imag(d1,d2,sum_imag, v1);
+        if( iscomplex ){
+            sum_imag = muladd_imag(d1,d2,sum_imag, v1);
+        }
         v1 += step;
         v2 += step;
     }
@@ -201,17 +209,18 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
 
 //NUM_THREADSの数のスレッドに計算を割り当てて計算する関数。
 //future/asyncを使用
-template <typename T, typename U, unsigned NUM_THREADS,bool ALIGNMENT>
+template <typename T, typename U, unsigned NUM_THREADS, bool ALIGNMENT>
 static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
     //cout << "calc_inner_multithread size " << size1 << "\n";
-    if( size1 < 32 ){//配列が短い場合にはスレッドを起こさない。この数は環境によって要調整
+    auto numthreads = nthreads;
+    if( size1 < numthreads * sizeof(T) * 16){//配列が短い場合にはスレッドを起こさない。この数は環境によって要調整
         return calc_inner<T,U,ALIGNMENT>(d1, d2, size1);
     }
-    auto remain = size1 % NUM_THREADS;//スレッドに割り振れないあまり。
-    auto size = size1 / NUM_THREADS;//スレッド１個あたりの計算数
+    auto remain = size1 % numthreads;//スレッドに割り振れないあまり。
+    auto size = size1 / numthreads;//スレッド１個あたりの計算数
     vector<future<U>> futures;
     if( size > 0 ){
-        for(unsigned i = 0; i < NUM_THREADS-1; i++){//自分を除いた数のスレッドを実行
+        for(unsigned i = 0; i < numthreads-1; i++){//自分を除いた数のスレッドを実行
             ssize_t start = i * size;
             auto d1start = d1 + start;
             auto d2start = d2 + start;
@@ -220,15 +229,14 @@ static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
             }));
         }
     }
-    ssize_t start = (NUM_THREADS-1) * size;
+    ssize_t start = (numthreads-1) * size;
     U result = calc_inner<T,U,ALIGNMENT>(d1 + start, d2 + start, size + remain);//自スレッド分の計算
     for(auto&& f : futures){//他のスレッドの計算結果を集計
         result += f.get();
     }
     return result;
 }
-
-template<bool ALIGNMENT>
+template <bool ALIGNMENT>
 static PyObject* inner_aligned(const PyArrayObject* array1, const PyArrayObject* array2, 
     decltype(array1->dimensions[0]) size){
     //cout << (array1->descr->type) << "\n";
@@ -236,28 +244,28 @@ static PyObject* inner_aligned(const PyArrayObject* array1, const PyArrayObject*
         case 'd':{
             const double* data1 = (const double*)array1->data;
             const double* data2 = (const double*)array2->data;
-            auto result = calc_inner_multithread<__m256d,double,4,ALIGNMENT>(data1, data2, size);
+            auto result = calc_inner_multithread<__m256d,double,NUM_CORES,ALIGNMENT>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("d", result);
         }
         case 'D':{
             const complex<double>* data1 = (const complex<double>*)array1->data;
             const complex<double>* data2 = (const complex<double>*)array2->data;
-            auto result = calc_inner_multithread<__m256d,complex<double>,4,ALIGNMENT>(data1, data2, size);
+            auto result = calc_inner_multithread<__m256d,complex<double>,NUM_CORES,ALIGNMENT>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("D", &result);
         }
         case 'f':{
             const float* data1 = (const float*)array1->data;
             const float* data2 = (const float*)array2->data;
-            auto result = calc_inner_multithread<__m256,float,4,ALIGNMENT>(data1, data2, size);
+            auto result = calc_inner_multithread<__m256,float,NUM_CORES,ALIGNMENT>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("f", result);
         }
         case 'F':{
             const complex<float>* data1 = (const complex<float>*)array1->data;
             const complex<float>* data2 = (const complex<float>*)array2->data;
-            complex<double> result = calc_inner_multithread<__m256,complex<float>,4,ALIGNMENT>(data1, data2, size);
+            complex<double> result = calc_inner_multithread<__m256,complex<float>,NUM_CORES,ALIGNMENT>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("D", &result);//"F"ではエラーとなる。
         }
@@ -294,6 +302,7 @@ static PyObject* inner(PyObject *self, PyObject *args)
     }
 }
 
+//array->dataを表示
 static PyObject* printAddress(PyObject *self, PyObject *args)
 {
     PyArrayObject *array1;
@@ -303,28 +312,6 @@ static PyObject* printAddress(PyObject *self, PyObject *args)
     }
     printf("array->data:%llx\n",array1->data);
     return Py_None;
-}
-
-
-//cpuのcore 数を得る。
-static int getNumOfCore(){
-    int eax;
-    int ebx;
-    asm("cpuid"
-        :"=a"(eax)
-        :"a"(0)
-    );
-    //printf("eax=%x\n",eax);
-    if( eax <= 1 )
-        return 1;
-    asm("cpuid"
-        :"=a"(ebx)
-        :"a"(1)
-    );
-    //printf("ebx=%x\n",ebx);
-    ebx >>=16;
-    ebx &= 0xff;
-    return ebx;
 }
 
 static PyMethodDef methods[] = {
@@ -347,6 +334,10 @@ static struct PyModuleDef cmodule = {
 
 EXTERNC void* PyInit_mylib(void)
 {
-    numofcores = getNumOfCore();
+    if( PyArray_API==NULL ){
+        import_array();
+    }
+    nthreads = thread::hardware_concurrency();
+    //printf("nthreads %d\n", nthreads);
     return PyModule_Create(&cmodule);
 }
