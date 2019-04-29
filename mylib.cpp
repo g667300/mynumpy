@@ -305,6 +305,108 @@ static PyObject* inner(PyObject *self, PyObject *args)
     }
 }
 
+template<typename T, typename U, bool ALIGNED, bool iscomplex>
+static void dot21_line(U* data, const U* data1, ssize_t skip, const U* data2, ssize_t size){
+    for( ssize_t i = 0; i < size; i ++){
+        data[i] += calc_inner<T,U,ALIGNED,iscomplex>(data1, data2, skip);
+        data1 += skip;
+    }
+}
+template<typename T, typename U, bool ALIGNED, unsigned NUM_THREADS,bool iscomplex>
+static PyObject* dot21_multithread(const PyArrayObject *array1, const PyArrayObject *array2, PyArrayObject* result){
+    auto size = array1->dimensions[0];
+    auto skip = array1->dimensions[1];
+
+    U* data = (U*)result->data;
+    auto data1 = (const U*)array1->data;
+    auto data2 = (const U*)array2->data;
+    auto remain = size % NUM_THREADS;
+    auto chunksize = size / NUM_THREADS;
+    vector<future<void>> futures;
+    if( chunksize > 0 ){
+        for(unsigned i = 0; i < NUM_THREADS-1; i++){//自分を除いた数のスレッドを実行
+            ssize_t start = i * chunksize;
+            auto d1start = data1 + start * skip;
+            auto dstart = data + start;
+            //printf("%d start %lld \n",i, start);
+            futures.push_back(async(launch::async,[dstart,d1start,data2,chunksize,skip](){//別スレッドで1要素を計算
+                dot21_line<T,U,ALIGNED,iscomplex>(dstart, d1start, skip, data2, chunksize);
+            }));
+        }
+    }
+    ssize_t start = (NUM_THREADS-1) * chunksize;
+    dot21_line<T,U,ALIGNED,iscomplex>(data + start, data1 + start* skip, skip, data2, chunksize + remain);//自スレッド分の計算
+    for(auto&& f : futures){//他のスレッドの計算結終了を待つ
+        f.wait();
+    }
+    return (PyObject*)result;
+}
+static PyObject* dot(PyObject *self, PyObject *args)
+{
+    PyArrayObject *array1,*array2;
+    if (!PyArg_ParseTuple(args, "OO", &array1, &array2 )){
+        PyErr_SetString(PyExc_ValueError, "not array");
+        return NULL;
+    }
+    if( array1->descr->type != array2->descr->type ){
+        PyErr_SetString(PyExc_IndexError, "type miss match");
+        return NULL;
+    }
+    auto ndim1 = array1->nd;
+    auto ndim2 = array2->nd;
+    auto dim1 = array1->dimensions;
+    //printArray<double>(array1, 1);
+    //printArray<double>(array2, 2);
+    //bool aligned = (((unsigned int)((unsigned long long)array1->data) | (unsigned int)((unsigned long long)array2->data)
+    //        & (32-1)) == 0);
+    
+    if(ndim1 == 1 && ndim2 == 1){
+        auto size = dim1[0];
+        return inner_aligned<true>(array1, array2, size);
+    }else if( ndim1 == 2 && (ndim2 == 1) ){
+        if( array1->dimensions[1] != array2->dimensions[0] ){
+            PyErr_SetString(PyExc_IndexError, "shapes not aligned");
+            return NULL;
+        }
+        auto size = array1->dimensions[0];
+        switch(array1->descr->type){
+            case 'D':{
+                auto result = PyArray_ZEROS(1, &size, NPY_COMPLEX128, 0);
+                if( result == NULL ){
+                    PyErr_SetString(PyExc_OverflowError, "");        
+                    return NULL;
+                }
+                return dot21_multithread<__m256d,complex<double>,true,NUM_CORES,true>(array1,array2,(PyArrayObject*)result);
+            }
+            case 'd':{
+                auto result = PyArray_ZEROS(1, &size, NPY_FLOAT64, 0);
+                if( result == NULL ){
+                    PyErr_SetString(PyExc_OverflowError, "");        
+                    return NULL;
+                }
+                return dot21_multithread<__m256d,double,true,NUM_CORES,false>(array1,array2,(PyArrayObject*)result);
+            }
+            case 'F':{
+                auto result = PyArray_ZEROS(1, &size, NPY_COMPLEX64, 0);
+                if( result == NULL ){
+                    PyErr_SetString(PyExc_OverflowError, "");        
+                    return NULL;
+                }
+                return dot21_multithread<__m256,complex<float>,true,NUM_CORES,true>(array1,array2,(PyArrayObject*)result);
+            }
+            case 'f':{
+                auto result = PyArray_ZEROS(1, &size, NPY_FLOAT32, 0);
+                if( result == NULL ){
+                    PyErr_SetString(PyExc_OverflowError, "");        
+                    return NULL;
+                }
+                return dot21_multithread<__m256,float,true,NUM_CORES,false>(array1,array2,(PyArrayObject*)result);
+            }
+        }
+    }
+    return NULL;
+}
+
 //array->dataを表示
 static PyObject* printAddress(PyObject *self, PyObject *args)
 {
@@ -319,6 +421,7 @@ static PyObject* printAddress(PyObject *self, PyObject *args)
 
 static PyMethodDef methods[] = {
     {"inner", inner, METH_VARARGS},
+    {"dot", dot, METH_VARARGS},
     {"printAddress", printAddress, METH_VARARGS},
     {NULL, NULL}
 };
