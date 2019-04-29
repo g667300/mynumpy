@@ -98,7 +98,7 @@ static inline T m256_setzerp(){
 
 //simd無しの内積を求める関数
 template <typename U>
-static U calc_inner_nosimd(const U* v1, const U* v2, ssize_t size){
+static inline U calc_inner_nosimd(const U* v1, const U* v2, ssize_t size){
     U result = 0;
     //cout << "calc_inner_nosimd " << size <<"\n";
     for(ssize_t i = 0; i < size; i++){
@@ -177,7 +177,7 @@ static inline auto getResult(const complex<float> sum, const __m256 sum_real, co
 
 //get inner product with simd instruction
 template <typename T,typename U, bool aligned, bool iscomplex>
-static U calc_inner(const U* v1, const U* v2, ssize_t size){
+static inline U calc_inner(const U* v1, const U* v2, ssize_t size){
     type_check();
     //cout << "calc_inner size " << size << "\n";
     //number of data per SIMD register
@@ -213,7 +213,7 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
 //NUM_THREADSの数のスレッドに計算を割り当てて計算する関数。
 //future/asyncを使用
 template <typename T, typename U, unsigned NUM_THREADS, bool ALIGNMENT, bool iscomplex>
-static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
+static inline U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
     //cout << "calc_inner_multithread size " << size1 << "\n";
     auto numthreads = nthreads;
     if( size1 < numthreads * sizeof(T) * 16){//配列が短い場合にはスレッドを起こさない。この数は環境によって要調整
@@ -306,13 +306,13 @@ static PyObject* inner(PyObject *self, PyObject *args)
 }
 
 template<typename T, typename U, bool ALIGNED, bool iscomplex>
-static void dot21_line(U* data, const U* data1, ssize_t skip, const U* data2, ssize_t size){
+static inline void dot21_line(U* data, const U* data1, ssize_t skip, const U* data2, ssize_t size){
     for( ssize_t i = 0; i < size; i ++){
         data[i] += calc_inner<T,U,ALIGNED,iscomplex>(data1, data2, skip);
         data1 += skip;
     }
 }
-template<typename T, typename U, bool ALIGNED, unsigned NUM_THREADS,bool iscomplex>
+template<typename T, typename U, bool ALIGNED, unsigned NTHREADS,bool iscomplex>
 static PyObject* dot21_multithread(const PyArrayObject *array1, const PyArrayObject *array2, PyArrayObject* result){
     auto size = array1->dimensions[0];
     auto skip = array1->dimensions[1];
@@ -320,11 +320,12 @@ static PyObject* dot21_multithread(const PyArrayObject *array1, const PyArrayObj
     U* data = (U*)result->data;
     auto data1 = (const U*)array1->data;
     auto data2 = (const U*)array2->data;
-    auto remain = size % NUM_THREADS;
-    auto chunksize = size / NUM_THREADS;
+    auto remain = size % nthreads;
+    auto chunksize = size / nthreads;
+    //printf("chunksize %llx remain %llx nthreads %llx\n",chunksize, remain, nthreads);
     vector<future<void>> futures;
     if( chunksize > 0 ){
-        for(unsigned i = 0; i < NUM_THREADS-1; i++){//自分を除いた数のスレッドを実行
+        for(unsigned i = 0; i < nthreads-1; i++){//自分を除いた数のスレッドを実行
             ssize_t start = i * chunksize;
             auto d1start = data1 + start * skip;
             auto dstart = data + start;
@@ -334,7 +335,7 @@ static PyObject* dot21_multithread(const PyArrayObject *array1, const PyArrayObj
             }));
         }
     }
-    ssize_t start = (NUM_THREADS-1) * chunksize;
+    ssize_t start = (nthreads-1) * chunksize;
     dot21_line<T,U,ALIGNED,iscomplex>(data + start, data1 + start* skip, skip, data2, chunksize + remain);//自スレッド分の計算
     for(auto&& f : futures){//他のスレッドの計算結終了を待つ
         f.wait();
