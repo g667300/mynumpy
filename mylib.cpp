@@ -29,29 +29,32 @@ static unsigned int nthreads = 1;
     ((is_same<complex<double>,U>::value) && (is_same<__m256d,T>::value))\
     ,"type mismatch")
 
-
-static inline auto m256_load(const double* d1, bool aligned){
+template<bool aligned>
+static inline auto m256_load(const double* d1){
     if(aligned){
         return _mm256_load_pd(d1);
     }else{
         return _mm256_loadu_pd(d1);
     }
 }
-static inline auto m256_load(const complex<double>* d1, bool aligned){
+template<bool aligned>
+static inline auto m256_load(const complex<double>* d1){
     if(aligned){
         return _mm256_load_pd((const double*)d1);
     }else{
         return _mm256_loadu_pd((const double*)d1);
     }
 }
-static inline auto m256_load(const float* d1, bool aligned){
+template<bool aligned>
+static inline auto m256_load(const float* d1){
     if(aligned){
         return _mm256_load_ps(d1);
     }else{
         return _mm256_loadu_ps(d1);
     }
 }
-static inline auto m256_load(const complex<float>* d1, bool aligned){
+template<bool aligned>
+static inline auto m256_load(const complex<float>* d1){
     if(aligned){
         return _mm256_load_ps((const float*)d1);
     }else{
@@ -114,10 +117,10 @@ static U calc_inner_nosimd(const U* v1, const U* v2, ssize_t size){
 // ans[3] = d1[2] * d2[3] + d1[3] * d2[2]
 
 //実数部の積和計算
-static auto muladd(const __m256d d1, const __m256d d2, __m256d sum){
+static inline auto muladd(const __m256d d1, const __m256d d2, __m256d sum){
     return m256_fmadd(d1,d2,sum);//sum=d1*d2+sum
 }
-static auto muladd(const __m256 d1, const __m256 d2, __m256 sum){
+static inline auto muladd(const __m256 d1, const __m256 d2, __m256 sum){
     return m256_fmadd(d1,d2,sum);//sum=d1*d2+sum
 }
 
@@ -142,8 +145,9 @@ static inline auto muladd_imag(const __m256 d1, const __m256 d2, __m256 sum, con
 
 //YMM regから答え取り出す。型によって結果の入り方が違うので、別関数になる。
 static inline auto getResult(const double sum, const __m256d sum_real, const __m256d sum_imag){
-    const double* results = (const double*)&sum_real;
-    auto result = sum + results[0] + results[1] + results[2] + results[3];
+    auto real = _mm256_hadd_pd(sum_real, sum_real);
+    const double* results = (const double*)&real;
+    auto result = sum + results[0] + results[3];
     return result;
 }
 
@@ -156,9 +160,10 @@ static inline auto getResult(const complex<double> sum, const __m256d sum_real, 
 }
 
 static inline auto getResult(const float sum, const __m256 sum_real, const __m256 sum_imag){
-    const float* results = (const float*)&sum_real;
-    auto result = sum + results[0] + results[1] + results[2] + results[3] 
-        + results[4] + results[5] + results[6] + results[7];
+    auto real = _mm256_hadd_ps(sum_real,sum_real);
+    const float* results = (const float*)&real;
+    auto result = sum + results[0] + results[1] 
+        + results[4] + results[5];
     return result;
 }
 static inline auto getResult(const complex<float> sum, const __m256 sum_real, const __m256 sum_imag){
@@ -170,21 +175,19 @@ static inline auto getResult(const complex<float> sum, const __m256 sum_real, co
                     imag[0] + imag[1] + imag[4] + imag[5]);
 }
 
-//simd命令を使って、内積を求める。
-template <typename T,typename U, bool aligned>
+//get inner product with simd instruction
+template <typename T,typename U, bool aligned, bool iscomplex>
 static U calc_inner(const U* v1, const U* v2, ssize_t size){
     type_check();
-    constexpr bool iscomplex = (is_same<complex<double>,U>::value) || (is_same<complex<float>,U>::value);
-
     //cout << "calc_inner size " << size << "\n";
+    //number of data per SIMD register
     constexpr int step = sizeof(T) / sizeof(U);
     static_assert(step > 0,"illeagal type");
     //cout << "step " << typeid(U).name() << step << "\n";
-    //simdレジスタ１個に入るデータの数
     if( size < step ){
-        return calc_inner_nosimd<U>(v1,v2,size);//配列が短すぎる場合には普通に計算
+        return calc_inner_nosimd<U>(v1,v2,size);//arrays are too short to simd
     }
-    auto remain = size % step;//simdに入りきらないあまり分。後で別に計算する。
+    auto remain = size % step;
     size -= remain;
     auto sum_real = m256_setzerp<T>();
     T sum_imag;
@@ -193,8 +196,8 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
     }
     for(ssize_t i = 0; i < size; i+= step){
         //cout << " i " << i << "\n";
-        auto d1 = m256_load(v1,aligned);
-        auto d2 = m256_load(v2,aligned);
+        auto d1 = m256_load<aligned>(v1);
+        auto d2 = m256_load<aligned>(v2);
         sum_real = muladd(d1,d2,sum_real);
         if( iscomplex ){
             sum_imag = muladd_imag(d1,d2,sum_imag, v1);
@@ -202,19 +205,19 @@ static U calc_inner(const U* v1, const U* v2, ssize_t size){
         v1 += step;
         v2 += step;
     }
-    U result = calc_inner_nosimd<U>(v1,v2,remain);//４個または８個のあまりの計算を行う。
+    U result = calc_inner_nosimd<U>(v1,v2,remain);//あまりの計算を行う。
     result = getResult(result, sum_real, sum_imag);
     return result;
 }
 
 //NUM_THREADSの数のスレッドに計算を割り当てて計算する関数。
 //future/asyncを使用
-template <typename T, typename U, unsigned NUM_THREADS, bool ALIGNMENT>
+template <typename T, typename U, unsigned NUM_THREADS, bool ALIGNMENT, bool iscomplex>
 static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
     //cout << "calc_inner_multithread size " << size1 << "\n";
     auto numthreads = nthreads;
     if( size1 < numthreads * sizeof(T) * 16){//配列が短い場合にはスレッドを起こさない。この数は環境によって要調整
-        return calc_inner<T,U,ALIGNMENT>(d1, d2, size1);
+        return calc_inner<T,U,ALIGNMENT,iscomplex>(d1, d2, size1);
     }
     auto remain = size1 % numthreads;//スレッドに割り振れないあまり。
     auto size = size1 / numthreads;//スレッド１個あたりの計算数
@@ -225,12 +228,12 @@ static U calc_inner_multithread(const U* d1, const U* d2, ssize_t size1) {
             auto d1start = d1 + start;
             auto d2start = d2 + start;
             futures.push_back(async(launch::async,[d1start,d2start,size](){//別スレッドでcalc_innerを実行
-                return calc_inner<T,U,ALIGNMENT>(d1start, d2start, size);
+                return calc_inner<T,U,ALIGNMENT,iscomplex>(d1start, d2start, size);
             }));
         }
     }
     ssize_t start = (numthreads-1) * size;
-    U result = calc_inner<T,U,ALIGNMENT>(d1 + start, d2 + start, size + remain);//自スレッド分の計算
+    U result = calc_inner<T,U,ALIGNMENT,iscomplex>(d1 + start, d2 + start, size + remain);//自スレッド分の計算
     for(auto&& f : futures){//他のスレッドの計算結果を集計
         result += f.get();
     }
@@ -244,28 +247,28 @@ static PyObject* inner_aligned(const PyArrayObject* array1, const PyArrayObject*
         case 'd':{
             const double* data1 = (const double*)array1->data;
             const double* data2 = (const double*)array2->data;
-            auto result = calc_inner_multithread<__m256d,double,NUM_CORES,ALIGNMENT>(data1, data2, size);
+            auto result = calc_inner_multithread<__m256d,double,NUM_CORES,ALIGNMENT,false>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("d", result);
         }
         case 'D':{
             const complex<double>* data1 = (const complex<double>*)array1->data;
             const complex<double>* data2 = (const complex<double>*)array2->data;
-            auto result = calc_inner_multithread<__m256d,complex<double>,NUM_CORES,ALIGNMENT>(data1, data2, size);
+            auto result = calc_inner_multithread<__m256d,complex<double>,NUM_CORES,ALIGNMENT,true>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("D", &result);
         }
         case 'f':{
             const float* data1 = (const float*)array1->data;
             const float* data2 = (const float*)array2->data;
-            auto result = calc_inner_multithread<__m256,float,NUM_CORES,ALIGNMENT>(data1, data2, size);
+            auto result = calc_inner_multithread<__m256,float,NUM_CORES,ALIGNMENT,false>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("f", result);
         }
         case 'F':{
             const complex<float>* data1 = (const complex<float>*)array1->data;
             const complex<float>* data2 = (const complex<float>*)array2->data;
-            complex<double> result = calc_inner_multithread<__m256,complex<float>,NUM_CORES,ALIGNMENT>(data1, data2, size);
+            complex<double> result = calc_inner_multithread<__m256,complex<float>,NUM_CORES,ALIGNMENT,true>(data1, data2, size);
             //cout << "result=" << result << "\n";
             return Py_BuildValue("D", &result);//"F"ではエラーとなる。
         }
